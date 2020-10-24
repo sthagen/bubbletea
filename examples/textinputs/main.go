@@ -1,5 +1,8 @@
 package main
 
+// A simple example demonstrating the use of multiple text input components
+// from the Bubbles component library.
+
 import (
 	"fmt"
 	"os"
@@ -9,9 +12,7 @@ import (
 	te "github.com/muesli/termenv"
 )
 
-const (
-	focusedTextColor = "205"
-)
+const focusedTextColor = "205"
 
 var (
 	color               = te.ColorProfile().Color
@@ -22,11 +23,7 @@ var (
 )
 
 func main() {
-	if err := tea.NewProgram(
-		initialize,
-		update,
-		view,
-	).Start(); err != nil {
+	if err := tea.NewProgram(initialModel()).Start(); err != nil {
 		fmt.Printf("could not start program: %s\n", err)
 		os.Exit(1)
 	}
@@ -40,40 +37,39 @@ type model struct {
 	submitButton  string
 }
 
-func initialize() (tea.Model, tea.Cmd) {
+func initialModel() model {
 	name := input.NewModel()
 	name.Placeholder = "Name"
 	name.Focus()
 	name.Prompt = focusedPrompt
 	name.TextColor = focusedTextColor
+	name.CharLimit = 32
 
 	nickName := input.NewModel()
 	nickName.Placeholder = "Nickname"
 	nickName.Prompt = blurredPrompt
+	nickName.CharLimit = 32
 
 	email := input.NewModel()
 	email.Placeholder = "Email"
 	email.Prompt = blurredPrompt
+	email.CharLimit = 64
 
-	return model{0, name, nickName, email, blurredSubmitButton},
-		tea.Batch(
-			input.Blink(name),
-			input.Blink(nickName),
-			input.Blink(email),
-		)
+	return model{0, name, nickName, email, blurredSubmitButton}
 
 }
+func (m model) Init() tea.Cmd {
+	return tea.Batch(
+		input.Blink(m.nameInput),
+		input.Blink(m.nickNameInput),
+		input.Blink(m.emailInput),
+	)
+}
 
-func update(msg tea.Msg, mdl tea.Model) (tea.Model, tea.Cmd) {
-	m, ok := mdl.(model)
-	if !ok {
-		panic("could not perform assertion on model")
-	}
-
+func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 
 	switch msg := msg.(type) {
-
 	case tea.KeyMsg:
 		switch msg.String() {
 
@@ -164,12 +160,7 @@ func updateInputs(msg tea.Msg, m model) (model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-func view(mdl tea.Model) string {
-	m, ok := mdl.(model)
-	if !ok {
-		return "could not perform assertion on model"
-	}
-
+func (m model) View() string {
 	s := "\n"
 
 	inputs := []string{
@@ -186,6 +177,5 @@ func view(mdl tea.Model) string {
 	}
 
 	s += "\n\n" + m.submitButton + "\n"
-
 	return s
 }

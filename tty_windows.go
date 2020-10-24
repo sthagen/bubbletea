@@ -2,13 +2,18 @@
 
 package tea
 
-import "github.com/muesli/termenv"
+import (
+	"os"
 
-func initTerminal() error {
-	termenv.HideCursor()
-	return nil
-}
+	"golang.org/x/sys/windows"
+)
 
-func restoreTerminal() {
-	termenv.ShowCursor()
+// enableAnsiColors enables support for ANSI color sequences in Windows
+// default console. Note that this only works with Windows 10.
+func enableAnsiColors() {
+	stdout := windows.Handle(os.Stdout.Fd())
+	var originalMode uint32
+
+	windows.GetConsoleMode(stdout, &originalMode)
+	windows.SetConsoleMode(stdout, originalMode|windows.ENABLE_VIRTUAL_TERMINAL_PROCESSING)
 }
