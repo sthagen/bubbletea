@@ -11,30 +11,35 @@ import (
 // the program's update function. There are a couple general patterns you could
 // use to check for keypresses:
 //
-//     // Switch on the type (safer)
-//     switch msg := msg.(type) {
-//     case KeyMsg:
-//         switch msg.Type {
-//         case KeyEnter:
-//             fmt.Println("you pressed enter!")
-//         case KeyRune:
-//             switch msg.Rune {
-//             case 'a':
-//                 fmt.Println("you pressed a!")
-//             }
-//         }
-//     }
-//
 //     // Switch on the string representation of the key (shorter)
 //     switch msg := msg.(type) {
 //     case KeyMsg:
 //         switch msg.String() {
 //         case "enter":
 //             fmt.Println("you pressed enter!")
-//         case "a':
+//         case "a":
 //             fmt.Println("you pressed a!")
 //         }
 //     }
+//
+//     // Switch on the key type (more foolproof)
+//     switch msg := msg.(type) {
+//     case KeyMsg:
+//         switch msg.Type {
+//         case KeyEnter:
+//             fmt.Println("you pressed enter!")
+//         case KeyRunes:
+//             switch string(msg.Runes) {
+//             case "a":
+//                 fmt.Println("you pressed a!")
+//             }
+//         }
+//     }
+//
+// Note that Key.Runes will always contain at least one character, so you can
+// always safely call Key.Runes[0]. In most cases Key.Runes will only contain
+// one character, though certain input method editors (most notably Chinese
+// IMEs) can input multiple runes at once.
 type KeyMsg Key
 
 // String returns a friendly name for a key.
@@ -46,8 +51,8 @@ func (k *KeyMsg) String() (str string) {
 	if k.Alt {
 		str += "alt+"
 	}
-	if k.Type == KeyRune {
-		str += string(k.Rune)
+	if k.Type == KeyRunes {
+		str += string(k.Runes)
 		return str
 	} else if s, ok := keyNames[int(k.Type)]; ok {
 		str += s
@@ -56,26 +61,21 @@ func (k *KeyMsg) String() (str string) {
 	return ""
 }
 
-// IsRune returns whether or not the key is a rune.
-func (k *KeyMsg) IsRune() bool {
-	return k.Type == KeyRune
-}
-
 // Key contains information about a keypress.
 type Key struct {
-	Type KeyType
-	Rune rune
-	Alt  bool
+	Type  KeyType
+	Runes []rune
+	Alt   bool
 }
 
 // KeyType indicates the key pressed, such as KeyEnter or KeyBreak or
-// KeyCtrlC. All other keys will be type KeyRune. To get the rune value, check
+// KeyCtrlC. All other keys will be type KeyRunes. To get the rune value, check
 // the Rune method on a Key struct, or use the Key.String() method:
 //
-//     k := Key{Type: KeyRune, Rune: 'a', Alt: true}
-//     if k.Type == KeyRune {
+//     k := Key{Type: KeyRunes, Runes: []rune{'a'}, Alt: true}
+//     if k.Type == KeyRunes {
 //
-//         fmt.Println(k.Rune)
+//         fmt.Println(k.Runes)
 //         // Output: a
 //
 //         fmt.Println(k.String())
@@ -174,7 +174,7 @@ const (
 
 // Other keys.
 const (
-	KeyRune = -(iota + 1)
+	KeyRunes = -(iota + 1)
 	KeyUp
 	KeyDown
 	KeyRight
@@ -224,7 +224,7 @@ var keyNames = map[int]string{
 	keySP:  "space",
 	keyDEL: "backspace",
 
-	KeyRune:     "rune",
+	KeyRunes:    "runes",
 	KeyUp:       "up",
 	KeyDown:     "down",
 	KeyRight:    "right",
@@ -279,11 +279,11 @@ var hexes = map[string]Key{
 
 // readInput reads keypress and mouse input from a TTY and returns a message
 // containing information about the key or mouse event accordingly.
-func readInput(r io.Reader) (Msg, error) {
+func readInput(input io.Reader) (Msg, error) {
 	var buf [256]byte
 
 	// Read and block
-	numBytes, err := r.Read(buf[:])
+	numBytes, err := input.Read(buf[:])
 	if err != nil {
 		return nil, err
 	}
@@ -295,41 +295,58 @@ func readInput(r io.Reader) (Msg, error) {
 		return MouseMsg(mouseEvent), nil
 	}
 
-	hex := fmt.Sprintf("%x", buf[:numBytes])
-
-	// Some of these need special handling
-	if k, ok := hexes[hex]; ok {
-		return KeyMsg(k), nil
-	}
-
-	// Get unicode value
-	char, _ := utf8.DecodeRune(buf[:])
-	if char == utf8.RuneError {
-		return nil, errors.New("could not decode rune")
-	}
-
-	// Is it a control character?
-	if numBytes == 1 && char <= keyUS || char == keyDEL {
-		return KeyMsg(Key{Type: KeyType(char)}), nil
-	}
-
 	// Is it a special sequence, like an arrow key?
 	if k, ok := sequences[string(buf[:numBytes])]; ok {
 		return KeyMsg(Key{Type: k}), nil
 	}
 
+	// Some of these need special handling
+	hex := fmt.Sprintf("%x", buf[:numBytes])
+	if k, ok := hexes[hex]; ok {
+		return KeyMsg(k), nil
+	}
+
 	// Is the alt key pressed? The buffer will be prefixed with an escape
-	// sequence if so
+	// sequence if so.
 	if numBytes > 1 && buf[0] == 0x1b {
 		// Now remove the initial escape sequence and re-process to get the
-		// character.
+		// character being pressed in combination with alt.
 		c, _ := utf8.DecodeRune(buf[1:])
 		if c == utf8.RuneError {
 			return nil, errors.New("could not decode rune after removing initial escape")
 		}
-		return KeyMsg(Key{Alt: true, Type: KeyRune, Rune: c}), nil
+		return KeyMsg(Key{Alt: true, Type: KeyRunes, Runes: []rune{c}}), nil
 	}
 
-	// Just a regular, ol' rune
-	return KeyMsg(Key{Type: KeyRune, Rune: char}), nil
+	var runes []rune
+	b := buf[:numBytes]
+
+	// Translate input into runes. In most cases we'll receive exactly one
+	// rune, but there are cases, particularly when an input method editor is
+	// used, where we can receive multiple runes at once.
+	for i, w := 0, 0; i < len(b); i += w {
+		r, width := utf8.DecodeRune(b[i:])
+		if r == utf8.RuneError {
+			return nil, errors.New("could not decode rune")
+		}
+		runes = append(runes, r)
+		w = width
+	}
+
+	if len(runes) == 0 {
+		return nil, errors.New("receied 0 runes from input")
+	} else if len(runes) > 1 {
+		// We received multiple runes, so we know this isn't a control
+		// character, sequence, and so on.
+		return KeyMsg(Key{Type: KeyRunes, Runes: runes}), nil
+	}
+
+	// Is the first rune a control character?
+	r := runes[0]
+	if numBytes == 1 && r <= keyUS || r == keyDEL {
+		return KeyMsg(Key{Type: KeyType(r)}), nil
+	}
+
+	// Welp, it's just a regular, ol' single rune
+	return KeyMsg(Key{Type: KeyRunes, Runes: runes}), nil
 }
