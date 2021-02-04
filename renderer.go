@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/muesli/reflow/truncate"
 )
 
 const (
@@ -148,7 +150,20 @@ func (r *renderer) flush() {
 		if _, exists := r.ignoreLines[r.linesRendered]; exists {
 			cursorDown(out) // skip rendering for this line.
 		} else {
-			_, _ = io.WriteString(out, lines[i])
+			line := lines[i]
+
+			// Truncate lines wider than the width of the window to avoid
+			// rendering troubles. If we don't have the width of the window
+			// this will be ignored.
+			//
+			// Note that on Windows we can't get the width of the window
+			// (signal SIGWINCH is not supported), so this will be ignored.
+			if r.width > 0 {
+				line = truncate.String(line, uint(r.width))
+			}
+
+			_, _ = io.WriteString(out, line)
+
 			if i != len(lines)-1 {
 				_, _ = io.WriteString(out, "\r\n")
 			}
@@ -181,7 +196,7 @@ func (r *renderer) write(s string) {
 	_, _ = r.buf.WriteString(s)
 }
 
-// setIngoredLines speicifies lines not to be touched by the standard Bubble Tea
+// setIgnoredLines specifies lines not to be touched by the standard Bubble Tea
 // renderer.
 func (r *renderer) setIgnoredLines(from int, to int) {
 	// Lock if we're going to be clearing some lines since we don't want
@@ -232,7 +247,7 @@ func (r *renderer) clearIgnoredLines() {
 // full-window applications (generally those that use the alternate screen
 // buffer).
 //
-// This method bypasses the normal rendering buffer and is philisophically
+// This method bypasses the normal rendering buffer and is philosophically
 // different than the normal way we approach rendering in Bubble Tea. It's for
 // use in high-performance rendering, such as a pager that could potentially
 // be rendering very complicated ansi. In cases where the content is simpler
@@ -262,7 +277,7 @@ func (r *renderer) insertTop(lines []string, topBoundary, bottomBoundary int) {
 // To call this function use the command ScrollDown().
 //
 // See note in insertTop() for caveats, how this function only makes sense for
-// full-window applications, and how it differs from the noraml way we do
+// full-window applications, and how it differs from the normal way we do
 // rendering in Bubble Tea.
 func (r *renderer) insertBottom(lines []string, topBoundary, bottomBoundary int) {
 	r.mtx.Lock()

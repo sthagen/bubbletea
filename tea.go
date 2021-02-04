@@ -10,11 +10,16 @@
 package tea
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"os"
+	"os/signal"
 	"runtime/debug"
 	"sync"
+	"syscall"
 
+	isatty "github.com/mattn/go-isatty"
 	te "github.com/muesli/termenv"
 	"golang.org/x/crypto/ssh/terminal"
 )
@@ -46,7 +51,7 @@ type Model interface {
 // function.
 type Cmd func() Msg
 
-// Batch peforms a bunch of commands concurrently with no ordering guarantees
+// Batch performs a bunch of commands concurrently with no ordering guarantees
 // about the results.
 func Batch(cmds ...Cmd) Cmd {
 	if len(cmds) == 0 {
@@ -57,20 +62,59 @@ func Batch(cmds ...Cmd) Cmd {
 	}
 }
 
+// ProgramOption is used to set options when initializing a Program. Program can
+// accept a variable number of options.
+//
+// Example usage:
+//
+//     p := NewProgram(model, WithInput(someInput), WithOutput(someOutput))
+type ProgramOption func(*Program)
+
+// WithOutput sets the output which, by default, is stdout. In most cases you
+// won't need to use this.
+func WithOutput(output *os.File) ProgramOption {
+	return func(m *Program) {
+		m.output = output
+	}
+}
+
+// WithInput sets the input which, by default, is stdin. In most cases you
+// won't need to use this.
+func WithInput(input io.Reader) ProgramOption {
+	return func(m *Program) {
+		m.input = input
+	}
+}
+
+// WithoutCatchPanics disables the panic catching that Bubble Tea does by
+// default. If panic catching is disabled the terminal will be in a fairly
+// unusable state after a panic because Bubble Tea will not perform its usual
+// cleanup on exit.
+func WithoutCatchPanics() ProgramOption {
+	return func(m *Program) {
+		m.CatchPanics = false
+	}
+}
+
 // Program is a terminal user interface.
 type Program struct {
 	initialModel Model
 
-	mtx             sync.Mutex
-	output          *os.File // where to send output. this will usually be os.Stdout.
+	mtx sync.Mutex
+
+	output          io.Writer // where to send output. this will usually be os.Stdout.
+	input           io.Reader // this will usually be os.Stdin.
 	renderer        *renderer
 	altScreenActive bool
 
-	// CatchPanics is incredibly useful for restoring the terminal to a useable
+	// CatchPanics is incredibly useful for restoring the terminal to a usable
 	// state after a panic occurs. When this is set, Bubble Tea will recover
 	// from panics, print the stack trace, and disable raw mode. This feature
 	// is on by default.
 	CatchPanics bool
+
+	inputIsTTY  bool
+	outputIsTTY bool
 }
 
 // Quit is a special command that tells the Bubble Tea program to exit.
@@ -106,12 +150,20 @@ func HideCursor() Msg {
 type hideCursorMsg struct{}
 
 // NewProgram creates a new Program.
-func NewProgram(model Model) *Program {
-	return &Program{
+func NewProgram(model Model, opts ...ProgramOption) *Program {
+	p := &Program{
 		initialModel: model,
 		output:       os.Stdout,
+		input:        os.Stdin,
 		CatchPanics:  true,
 	}
+
+	// Apply all options to program
+	for _, opt := range opts {
+		opt(p)
+	}
+
+	return p
 }
 
 // Start initializes the program.
@@ -121,7 +173,42 @@ func (p *Program) Start() error {
 		msgs = make(chan Msg)
 		errs = make(chan error)
 		done = make(chan struct{})
+
+		// If output is a file (e.g. os.Stdout) then this will be set
+		// accordingly. Most of the time you should refer to p.outputIsTTY
+		// rather than do a nil check against the value here.
+		outputAsFile *os.File
 	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Is output a terminal?
+	if f, ok := p.output.(*os.File); ok {
+		outputAsFile = f
+		p.outputIsTTY = isatty.IsTerminal(f.Fd())
+	}
+
+	// Is input a terminal?
+	if f, ok := p.input.(*os.File); ok {
+		p.inputIsTTY = isatty.IsTerminal(f.Fd())
+	}
+
+	// Listen for SIGINT. Note that in most cases ^C will not send an
+	// interrupt because the terminal will be in raw mode and thus capture
+	// that keystroke and send it along to Program.Update. If input is not a
+	// TTY, however, ^C will be caught here.
+	go func() {
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, syscall.SIGINT)
+		defer signal.Stop(sig)
+
+		select {
+		case <-ctx.Done():
+		case <-sig:
+			msgs <- quitMsg{}
+		}
+	}()
 
 	if p.CatchPanics {
 		defer func() {
@@ -136,11 +223,15 @@ func (p *Program) Start() error {
 
 	p.renderer = newRenderer(p.output, &p.mtx)
 
-	err := initTerminal(p.output)
-	if err != nil {
-		return err
+	// Check if output is a TTY before entering raw mode, hiding the cursor and
+	// so on.
+	{
+		err := p.initTerminal()
+		if err != nil {
+			return err
+		}
+		defer p.restoreTerminal()
 	}
-	defer restoreTerminal(p.output)
 
 	// Initialize program
 	model := p.initialModel
@@ -159,27 +250,35 @@ func (p *Program) Start() error {
 	p.renderer.write(model.View())
 
 	// Subscribe to user input
-	go func() {
-		for {
-			msg, err := readInput(os.Stdin)
+	if p.inputIsTTY {
+		go func() {
+			for {
+				msg, err := readInput(p.input)
+				if err != nil {
+					// If we get EOF just stop listening for input
+					if err == io.EOF {
+						break
+					}
+					errs <- err
+				}
+				msgs <- msg
+			}
+		}()
+	}
+
+	if p.outputIsTTY {
+		// Get initial terminal size
+		go func() {
+			w, h, err := terminal.GetSize(int(outputAsFile.Fd()))
 			if err != nil {
 				errs <- err
 			}
-			msgs <- msg
-		}
-	}()
+			msgs <- WindowSizeMsg{w, h}
+		}()
 
-	// Get initial terminal size
-	go func() {
-		w, h, err := terminal.GetSize(int(p.output.Fd()))
-		if err != nil {
-			errs <- err
-		}
-		msgs <- WindowSizeMsg{w, h}
-	}()
-
-	// Listen for window resizes
-	go listenForResize(p.output, msgs, errs)
+		// Listen for window resizes
+		go listenForResize(outputAsFile, msgs, errs)
+	}
 
 	// Process commands
 	go func() {
@@ -268,7 +367,7 @@ func (p *Program) EnableMouseCellMotion() {
 }
 
 // DisableMouseCellMotion disables Mouse Cell Motion tracking. If you've
-// enabled Cell Motion mouse trakcing be sure to call this as your program is
+// enabled Cell Motion mouse tracking be sure to call this as your program is
 // exiting or your users will be very upset!
 func (p *Program) DisableMouseCellMotion() {
 	p.mtx.Lock()
