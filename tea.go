@@ -73,7 +73,7 @@ type ProgramOption func(*Program)
 
 // WithOutput sets the output which, by default, is stdout. In most cases you
 // won't need to use this.
-func WithOutput(output *os.File) ProgramOption {
+func WithOutput(output io.Writer) ProgramOption {
 	return func(m *Program) {
 		m.output = output
 	}
@@ -95,6 +95,20 @@ func WithInput(input io.Reader) ProgramOption {
 func WithoutCatchPanics() ProgramOption {
 	return func(m *Program) {
 		m.CatchPanics = false
+	}
+}
+
+// WithoutRenderer disables the renderer. When this is set output and log
+// statements will be plainly sent to stdout (or another output if one is set)
+// without any rendering and redrawing logic. In other words, printing and
+// logging will behave the same way it would in a non-TUI commandline tool.
+// This can be useful if you want to use the Bubble Tea framework for a non-TUI
+// application, or to provide an additional non-TUI mode to your Bubble Tea
+// programs. For example, your program could behave like a daemon if output is
+// not a TTY.
+func WithoutRenderer() ProgramOption {
+	return func(m *Program) {
+		m.renderer = &nilRenderer{}
 	}
 }
 
@@ -125,7 +139,7 @@ type Program struct {
 
 	output          io.Writer // where to send output. this will usually be os.Stdout.
 	input           io.Reader // this will usually be os.Stdin.
-	renderer        *renderer
+	renderer        renderer
 	altScreenActive bool
 
 	// CatchPanics is incredibly useful for restoring the terminal to a usable
@@ -153,6 +167,26 @@ func Quit() Msg {
 // quitMsg in an internal message signals that the program should quit. You can
 // send a quitMsg with Quit.
 type quitMsg struct{}
+
+// EnterAltScreen is a special command that tells the Bubble Tea program to enter
+// alternate screen buffer.
+func EnterAltScreen() Msg {
+	return enterAltScreenMsg{}
+}
+
+// enterAltScreenMsg in an internal message signals that the program should enter
+// alternate screen buffer. You can send a enterAltScreenMsg with EnterAltScreen.
+type enterAltScreenMsg struct{}
+
+// ExitAltScreen is a special command that tells the Bubble Tea program to exit
+// alternate screen buffer.
+func ExitAltScreen() Msg {
+	return exitAltScreenMsg{}
+}
+
+// exitAltScreenMsg in an internal message signals that the program should exit
+// alternate screen buffer. You can send a exitAltScreenMsg with ExitAltScreen.
+type exitAltScreenMsg struct{}
 
 // batchMsg is the internal message used to perform a bunch of commands. You
 // can send a batchMsg with Batch.
@@ -263,7 +297,10 @@ func (p *Program) Start() error {
 		}()
 	}
 
-	p.renderer = newRenderer(p.output, p.mtx)
+	// If no renderer is set use the standard one.
+	if p.renderer == nil {
+		p.renderer = newRenderer(p.output, p.mtx)
+	}
 
 	// Check if output is a TTY before entering raw mode, hiding the cursor and
 	// so on.
@@ -286,7 +323,7 @@ func (p *Program) Start() error {
 
 	// Start renderer
 	p.renderer.start()
-	p.renderer.altScreenActive = p.altScreenActive
+	p.renderer.setAltScreen(p.altScreenActive)
 
 	// Render initial view
 	p.renderer.write(model.View())
@@ -349,9 +386,14 @@ func (p *Program) Start() error {
 			// Handle special messages
 			switch msg.(type) {
 			case quitMsg:
+				p.ExitAltScreen()
 				p.renderer.stop()
 				close(done)
 				return nil
+			case enterAltScreenMsg:
+				p.EnterAltScreen()
+			case exitAltScreenMsg:
+				p.ExitAltScreen()
 			case hideCursorMsg:
 				hideCursor(p.output)
 			}
@@ -365,7 +407,10 @@ func (p *Program) Start() error {
 			}
 
 			// Process internal messages for the renderer
-			p.renderer.handleMessages(msg)
+			if r, ok := p.renderer.(*standardRenderer); ok {
+				r.handleMessages(msg)
+			}
+
 			var cmd Cmd
 			model, cmd = model.Update(msg) // run update
 			cmds <- cmd                    // process command (if any)
@@ -379,12 +424,17 @@ func (p *Program) Start() error {
 func (p *Program) EnterAltScreen() {
 	p.mtx.Lock()
 	defer p.mtx.Unlock()
+
+	if p.altScreenActive {
+		return
+	}
+
 	fmt.Fprintf(p.output, te.CSI+te.AltScreenSeq)
 	moveCursor(p.output, 0, 0)
 
 	p.altScreenActive = true
 	if p.renderer != nil {
-		p.renderer.altScreenActive = p.altScreenActive
+		p.renderer.setAltScreen(p.altScreenActive)
 	}
 }
 
@@ -392,11 +442,16 @@ func (p *Program) EnterAltScreen() {
 func (p *Program) ExitAltScreen() {
 	p.mtx.Lock()
 	defer p.mtx.Unlock()
+
+	if !p.altScreenActive {
+		return
+	}
+
 	fmt.Fprintf(p.output, te.CSI+te.ExitAltScreenSeq)
 
 	p.altScreenActive = false
 	if p.renderer != nil {
-		p.renderer.altScreenActive = p.altScreenActive
+		p.renderer.setAltScreen(p.altScreenActive)
 	}
 }
 

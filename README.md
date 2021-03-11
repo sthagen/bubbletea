@@ -261,6 +261,9 @@ For some Bubble Tea programs in production, see:
 * [STTG](https://github.com/wille1101/sttg): teletext client for SVT, Sweden’s national public television station
 * [gitflow-toolkit](https://github.com/mritd/gitflow-toolkit): a GitFlow submission tool
 * [ticker](https://github.com/achannarasappa/ticker): a terminal stock watcher and stock position tracker
+* [tz](https://github.com/oz/tz): an aid for scheduling across multiple time zones
+* [httpit](https://github.com/gonetx/httpit): a rapid http(s) benchmark tool
+* [gembro](https://git.sr.ht/~rafael/gembro): a Gemini browser
 
 ## Libraries we use with Bubble Tea
 
