@@ -64,7 +64,8 @@ func (r *standardRenderer) start() {
 // stop permanently halts the renderer.
 func (r *standardRenderer) stop() {
 	r.flush()
-	r.done <- struct{}{}
+	clearLine(r.out)
+	close(r.done)
 }
 
 // listen waits for ticks on the ticker, or a signal to stop the renderer.
@@ -76,11 +77,8 @@ func (r *standardRenderer) listen() {
 				r.flush()
 			}
 		case <-r.done:
-			r.mtx.Lock()
 			r.ticker.Stop()
 			r.ticker = nil
-			r.mtx.Unlock()
-			close(r.done)
 			return
 		}
 	}
@@ -291,8 +289,10 @@ func (r *standardRenderer) insertBottom(lines []string, topBoundary, bottomBound
 func (r *standardRenderer) handleMessages(msg Msg) {
 	switch msg := msg.(type) {
 	case WindowSizeMsg:
+		r.mtx.Lock()
 		r.width = msg.Width
 		r.height = msg.Height
+		r.mtx.Unlock()
 
 	case clearScrollAreaMsg:
 		r.clearIgnoredLines()
