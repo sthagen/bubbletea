@@ -276,6 +276,10 @@ For some Bubble Tea programs in production, see:
 * [tz](https://github.com/oz/tz): an aid for scheduling across multiple time zones
 * [httpit](https://github.com/gonetx/httpit): a rapid http(s) benchmark tool
 * [gembro](https://git.sr.ht/~rafael/gembro): a Gemini browser
+* [fm](https://github.com/knipferrc/fm): a terminal-based file manager
+* [StormForge Optimize – Controller](https://github.com/thestormforge/optimize-controller): a tool for experimenting with application configurations in Kubernetes
+* [Slides](https://github.com/maaslalani/slides): a markdown-based presentation tool
+* [Typer](https://github.com/maaslalani/typer): a typing test
 
 ## Feedback
 
@@ -304,4 +308,4 @@ Part of [Charm](https://charm.sh).
 
 <a href="https://charm.sh/"><img alt="The Charm logo" src="https://stuff.charm.sh/charm-badge-unrounded.jpg" width="400"></a>
 
-Charm热爱开源! / Charm loves open source!
+Charm热爱开源 • Charm loves open source

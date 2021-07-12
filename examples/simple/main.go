@@ -12,7 +12,8 @@ import (
 )
 
 func main() {
-	// Log to a file. Useful in debugging. Not required.
+	// Log to a file. Useful in debugging since you can't really log to stdout.
+	// Not required.
 	logfilePath := os.Getenv("BUBBLETEA_LOG")
 	if logfilePath != "" {
 		if _, err := tea.LogToFile(logfilePath, "simple"); err != nil {
@@ -40,7 +41,7 @@ func (m model) Init() tea.Cmd {
 
 // Update is called when messages are received. The idea is that you inspect the
 // message and send back an updated model accordingly. You can also return
-// a command, which is a function that peforms I/O and returns a message.
+// a command, which is a function that performs I/O and returns a message.
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg.(type) {
 	case tea.KeyMsg:

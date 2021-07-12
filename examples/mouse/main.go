@@ -11,13 +11,7 @@ import (
 )
 
 func main() {
-	p := tea.NewProgram(model{})
-
-	p.EnterAltScreen()
-	defer p.ExitAltScreen()
-	p.EnableMouseAllMotion()
-	defer p.DisableMouseAllMotion()
-
+	p := tea.NewProgram(model{}, tea.WithAltScreen(), tea.WithMouseAllMotion())
 	if err := p.Start(); err != nil {
 		log.Fatal(err)
 	}
@@ -35,7 +29,7 @@ func (m model) Init() tea.Cmd {
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		if s := msg.String(); s == "ctrl+c" || s == "q" {
+		if s := msg.String(); s == "ctrl+c" || s == "q" || s == "esc" {
 			return m, tea.Quit
 		}
 

@@ -53,15 +53,15 @@ func main() {
 		defer f.Close()
 	}
 
-	p := tea.NewProgram(model{content: string(content)})
+	p := tea.NewProgram(
+		model{content: string(content)},
 
-	// Use the full size of the terminal in its "alternate screen buffer"
-	p.EnterAltScreen()
-	defer p.ExitAltScreen()
+		// Use the full size of the terminal in its "alternate screen buffer"
+		tea.WithAltScreen(),
 
-	// We also turn on mouse support so we can track the mouse wheel
-	p.EnableMouseCellMotion()
-	defer p.DisableMouseCellMotion()
+		// Also turn on mouse support so we can track the mouse wheel
+		tea.WithMouseCellMotion(),
+	)
 
 	if err := p.Start(); err != nil {
 		fmt.Println("could not run program:", err)
@@ -87,8 +87,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		// Ctrl+c exits
-		if k := msg.String(); k == "ctrl+c" || k == "q" {
+		if k := msg.String(); k == "ctrl+c" || k == "q" || k == "esc" {
 			return m, tea.Quit
 		}
 
