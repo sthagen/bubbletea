@@ -52,164 +52,30 @@ type Model interface {
 // function.
 type Cmd func() Msg
 
-// ProgramOption is used to set options when initializing a Program. Program can
-// accept a variable number of options.
-//
-// Example usage:
-//
-//     p := NewProgram(model, WithInput(someInput), WithOutput(someOutput))
-//
-type ProgramOption func(*Program)
-
-// WithOutput sets the output which, by default, is stdout. In most cases you
-// won't need to use this.
-func WithOutput(output io.Writer) ProgramOption {
-	return func(m *Program) {
-		m.output = output
-	}
-}
-
-// WithInput sets the input which, by default, is stdin. In most cases you
-// won't need to use this.
-func WithInput(input io.Reader) ProgramOption {
-	return func(m *Program) {
-		m.input = input
-		m.inputStatus = customInput
-	}
-}
-
-// WithoutCatchPanics disables the panic catching that Bubble Tea does by
-// default. If panic catching is disabled the terminal will be in a fairly
-// unusable state after a panic because Bubble Tea will not perform its usual
-// cleanup on exit.
-func WithoutCatchPanics() ProgramOption {
-	return func(m *Program) {
-		m.CatchPanics = false
-	}
-}
-
-// WithAltScreen starts the program with the alternate screen buffer enabled
-// (i.e. the program starts in full window mode). Note that the altscreen will
-// be automatically exited when the program quits.
-//
-// Example:
-//
-//     p := tea.NewProgram(Model{}, tea.WithAltScreen())
-//     if err := p.Start(); err != nil {
-//         fmt.Println("Error running program:", err)
-//         os.Exit(1)
-//     }
-//
-// To enter the altscreen once the program has already started running use the
-// EnterAltScreen command.
-func WithAltScreen() ProgramOption {
-	return func(p *Program) {
-		p.startupOptions |= withAltScreen
-	}
-}
-
-// WithMouseCellMotion starts the program with the mouse enabled in "cell
-// motion" mode.
-//
-// Cell motion mode enables mouse click, release, and wheel events. Mouse
-// movement events are also captured if a mouse button is pressed (i.e., drag
-// events). Cell motion mode is better supported than all motion mode.
-//
-// To enable mouse cell motion once the program has already started running use
-// the EnableMouseCellMotion command. To disable the mouse when the program is
-// running use the DisableMouse command.
-//
-// The mouse will be automatically disabled when the program exits.
-func WithMouseCellMotion() ProgramOption {
-	return func(p *Program) {
-		p.startupOptions |= withMouseCellMotion // set
-		p.startupOptions &^= withMouseAllMotion // clear
-	}
-}
-
-// WithMouseAllMotion starts the program with the mouse enabled in "all motion"
-// mode.
-//
-// EnableMouseAllMotion is a special command that enables mouse click, release,
-// wheel, and motion events, which are delivered regardless of whether a mouse
-// button is pressed, effectively enabling support for hover interactions.
-//
-// Many modern terminals support this, but not all. If in doubt, use
-// EnableMouseCellMotion instead.
-//
-// To enable the mouse once the program has already started running use the
-// EnableMouseAllMotion command. To disable the mouse when the program is
-// running use the DisableMouse command.
-//
-// The mouse will be automatically disabled when the program exits.
-func WithMouseAllMotion() ProgramOption {
-	return func(p *Program) {
-		p.startupOptions |= withMouseAllMotion   // set
-		p.startupOptions &^= withMouseCellMotion // clear
-	}
-}
-
-// WithoutRenderer disables the renderer. When this is set output and log
-// statements will be plainly sent to stdout (or another output if one is set)
-// without any rendering and redrawing logic. In other words, printing and
-// logging will behave the same way it would in a non-TUI commandline tool.
-// This can be useful if you want to use the Bubble Tea framework for a non-TUI
-// application, or to provide an additional non-TUI mode to your Bubble Tea
-// programs. For example, your program could behave like a daemon if output is
-// not a TTY.
-func WithoutRenderer() ProgramOption {
-	return func(m *Program) {
-		m.renderer = &nilRenderer{}
-	}
-}
-
-// startupOptions contains configuration options to be run while the program
-// is initializing.
+// Options to customize the program during its initialization. These are
+// generally set with ProgramOptions.
 //
 // The options here are treated as bits.
 type startupOptions byte
 
-// Available startup options.
+func (s startupOptions) has(option startupOptions) bool {
+	return s&option != 0
+}
+
 const (
 	withAltScreen startupOptions = 1 << iota
 	withMouseCellMotion
 	withMouseAllMotion
+	withInputTTY
+	withCustomInput
 )
-
-// inputStatus indicates the current state of the input. By default, input is
-// stdin, however we'll change this if input's not a TTY. The user can also set
-// the input.
-type inputStatus int
-
-const (
-	// Generally this will be stdin.
-	//
-	// Lint ignore note: this is the implicit default value. While it's not
-	// checked explicitly, it's presence nullifies the other possible values
-	// of this type in logical statements.
-	defaultInput inputStatus = iota // nolint:golint,deadcode,unused,varcheck
-
-	// The user explicitly set the input.
-	customInput
-
-	// We've opened a TTY for input.
-	managedInput
-)
-
-func (i inputStatus) String() string {
-	return [...]string{
-		"default input",
-		"custom input",
-		"managed input",
-	}[i]
-}
 
 // Program is a terminal user interface.
 type Program struct {
 	initialModel Model
 
 	// Configuration options that will set as the program is initializing,
-	// treated as bits.  These options can be set via various ProgramOptions.
+	// treated as bits. These options can be set via various ProgramOptions.
 	startupOptions startupOptions
 
 	mtx  *sync.Mutex
@@ -228,10 +94,7 @@ type Program struct {
 	// is on by default.
 	CatchPanics bool
 
-	inputStatus inputStatus
-	inputIsTTY  bool
-	outputIsTTY bool
-	console     console.Console
+	console console.Console
 
 	// Stores the original reference to stdin for cases where input is not a
 	// TTY on windows and we've automatically opened CONIN$ to receive input.
@@ -392,38 +255,39 @@ func (p *Program) Start() error {
 	var (
 		cmds = make(chan Cmd)
 		errs = make(chan error)
-
-		// If output is a file (e.g. os.Stdout) then this will be set
-		// accordingly. Most of the time you should refer to p.outputIsTTY
-		// rather than do a nil check against the value here.
-		outputAsFile *os.File
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Is output a terminal?
-	if f, ok := p.output.(*os.File); ok {
-		outputAsFile = f
-		p.outputIsTTY = isatty.IsTerminal(f.Fd())
-	}
-
-	// Is input a terminal?
-	if f, ok := p.input.(*os.File); ok {
-		p.inputIsTTY = isatty.IsTerminal(f.Fd())
-	}
-
-	// If input is not a terminal, and the user hasn't set a custom input, open
-	// a TTY so we can capture input as normal. This will allow things to "just
-	// work" in cases where data was piped or redirected into this application.
-	if !p.inputIsTTY && p.inputStatus != customInput {
+	switch {
+	case p.startupOptions.has(withInputTTY):
+		// Open a new TTY, by request
 		f, err := openInputTTY()
 		if err != nil {
 			return err
 		}
 		p.input = f
-		p.inputIsTTY = true
-		p.inputStatus = managedInput
+
+	case !p.startupOptions.has(withCustomInput):
+		// If the user hasn't set a custom input, and input's not a terminal,
+		// open a TTY so we can capture input as normal. This will allow things
+		// to "just work" in cases where data was piped or redirected into this
+		// application.
+		f, isFile := p.input.(*os.File)
+		if !isFile {
+			break
+		}
+
+		if isatty.IsTerminal(f.Fd()) {
+			break
+		}
+
+		f, err := openInputTTY()
+		if err != nil {
+			return err
+		}
+		p.input = f
 	}
 
 	// Listen for SIGINT. Note that in most cases ^C will not send an
@@ -455,11 +319,8 @@ func (p *Program) Start() error {
 
 	// Check if output is a TTY before entering raw mode, hiding the cursor and
 	// so on.
-	{
-		err := p.initTerminal()
-		if err != nil {
-			return err
-		}
+	if err := p.initTerminal(); err != nil {
+		return err
 	}
 
 	// If no renderer is set use the standard one.
@@ -494,7 +355,7 @@ func (p *Program) Start() error {
 	p.renderer.write(model.View())
 
 	// Subscribe to user input
-	if p.inputIsTTY {
+	if p.input != nil {
 		go func() {
 			for {
 				msg, err := readInput(p.input)
@@ -510,10 +371,10 @@ func (p *Program) Start() error {
 		}()
 	}
 
-	if p.outputIsTTY {
-		// Get initial terminal size
+	if f, ok := p.output.(*os.File); ok {
+		// Get initial terminal size and send it to the program
 		go func() {
-			w, h, err := term.GetSize(int(outputAsFile.Fd()))
+			w, h, err := term.GetSize(int(f.Fd()))
 			if err != nil {
 				errs <- err
 			}
@@ -521,7 +382,7 @@ func (p *Program) Start() error {
 		}()
 
 		// Listen for window resizes
-		go listenForResize(outputAsFile, p.msgs, errs)
+		go listenForResize(f, p.msgs, errs)
 	}
 
 	// Process commands
@@ -620,8 +481,6 @@ func (p *Program) shutdown(kill bool) {
 		p.renderer.stop()
 	}
 	close(p.done)
-	close(p.msgs)
-	p.msgs = nil
 	p.ExitAltScreen()
 	p.DisableMouseCellMotion()
 	p.DisableMouseAllMotion()
